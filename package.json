@@ -1,0 +1,31 @@
+{
+  "name": "nova-email-service",
+  "version": "1.0.0",
+  "description": "Background service for processing Nylas webhook notifications from PGMQ queue",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "nylas",
+    "email",
+    "webhook",
+    "pgmq",
+    "queue-processor"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^16.3.1",
+    "nylas": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

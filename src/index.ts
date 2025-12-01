@@ -2,10 +2,12 @@ import { config, validateConfig } from './config';
 import { QueueProcessor } from './queue-processor';
 import { BackfillProcessor } from './backfill-processor';
 import { ThreadSyncProcessor } from './thread-sync-processor';
+import { CompletionMonitor } from './completion-monitor';
 
 let webhookProcessor: QueueProcessor | null = null;
 let backfillProcessor: BackfillProcessor | null = null;
 let threadSyncProcessor: ThreadSyncProcessor | null = null;
+let completionMonitor: CompletionMonitor | null = null;
 let isShuttingDown = false;
 
 async function main() {
@@ -15,24 +17,27 @@ async function main() {
     // Validate configuration
     validateConfig();
     
-    // Create all three processors
+    // Create all four processors
     webhookProcessor = new QueueProcessor();
     backfillProcessor = new BackfillProcessor();
     threadSyncProcessor = new ThreadSyncProcessor();
+    completionMonitor = new CompletionMonitor();
     
-    // Start all three processors in parallel
-    console.log('[Service] Starting webhook, backfill, and thread sync processors...');
+    // Start all four processors in parallel
+    console.log('[Service] Starting webhook, backfill, thread sync, and completion monitor processors...');
     await Promise.all([
       webhookProcessor.start(),
       backfillProcessor.start(),
-      threadSyncProcessor.start()
+      threadSyncProcessor.start(),
+      completionMonitor.start()
     ]);
     
     console.log('[Service] Nova Email Service started successfully');
-    console.log('[Service] All three processors are running:');
+    console.log('[Service] All four processors are running:');
     console.log('[Service] - Webhook processor (real-time notifications)');
     console.log('[Service] - Backfill processor (orchestrates thread discovery)');
     console.log('[Service] - Thread sync processor (syncs individual threads)');
+    console.log('[Service] - Completion monitor (tracks progress & marks complete)');
     
   } catch (error) {
     console.error('[Service] Failed to start:', error);
@@ -50,7 +55,7 @@ async function shutdown(signal: string) {
   isShuttingDown = true;
   console.log(`\n[Service] Received ${signal}, shutting down gracefully...`);
   
-  // Stop all three processors in parallel
+  // Stop all four processors in parallel
   const shutdownPromises = [];
   
   if (webhookProcessor) {
@@ -63,6 +68,10 @@ async function shutdown(signal: string) {
   
   if (threadSyncProcessor) {
     shutdownPromises.push(threadSyncProcessor.stop());
+  }
+  
+  if (completionMonitor) {
+    shutdownPromises.push(completionMonitor.stop());
   }
   
   await Promise.all(shutdownPromises);

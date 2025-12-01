@@ -55,6 +55,9 @@ export class BackfillProcessor {
     this.isRunning = true;
     console.log('[Backfill] Starting backfill processor');
     
+    // Recover orphaned threads at startup
+    await this.recoverOrphanedThreads();
+    
     // Start continuous polling loop
     await this.runWorker();
   }
@@ -160,6 +163,9 @@ export class BackfillProcessor {
     try {
       console.log(`[Backfill] Starting thread-based backfill for inbox ${inbox_id}, config ${config_id}`);
       console.log(`[Backfill] Date range: ${start_date} to ${end_date}`);
+      
+      // Check for existing queued threads for this config and queue them first
+      await this.checkForExistingQueuedThreads(config_id);
       
       // Clear the cache for this backfill job
       this.queuedThreadsCache.clear();
@@ -273,11 +279,7 @@ export class BackfillProcessor {
         p_threads_queued: threadsQueued
       });
       
-      console.log(`[Backfill] Transitioned to thread_sync phase with ${threadsQueued} threads queued`);
-      
-      // Now bulk queue all threads to PGMQ for processing
-      await this.bulkQueueThreads(config_id);
-      
+      console.log(`[Backfill] Transitioned to thread_sync phase with ${threadsQueued} threads already in PGMQ`);
       console.log(`[Backfill] Thread-sync-processor can now process threads for config ${config_id}`);
       
       // Clear the checkpoint now that backfill is complete
@@ -324,9 +326,11 @@ export class BackfillProcessor {
       return false;
     }
     
-    // Thread is new - ONLY track in database during backfill phase
-    // We'll queue to PGMQ later after transitioning to thread_sync
+    // Thread is new - insert to queued_threads table
     await this.insertQueuedThread(configId, inboxId, threadId, grantId);
+    
+    // IMMEDIATELY queue to PGMQ (don't wait for bulk)
+    await this.queueThreadToPGMQ(threadId, grantId, inboxId, configId);
     
     // Add to cache
     this.queuedThreadsCache.add(threadId);
@@ -664,50 +668,171 @@ export class BackfillProcessor {
     }
   }
   
-  private async bulkQueueThreads(configId: string): Promise<void> {
+  private async recoverOrphanedThreads(): Promise<void> {
+    console.log('[Backfill] Checking for orphaned threads...');
+    
     try {
-      console.log(`[Backfill] Bulk queueing threads to PGMQ for config ${configId}...`);
+      let totalProcessed = 0;
+      let batchNumber = 0;
+      const BATCH_SIZE = 1000;
       
-      // Fetch all queued threads for this config
-      const { data: queuedThreads, error } = await this.supabase
+      // Keep processing batches until no more orphaned threads are found
+      while (this.isRunning) {
+        batchNumber++;
+        
+        // Query for threads that are queued but not in PGMQ (limit to batch size)
+        const { data: orphanedThreads, error } = await this.supabase
+          .from('queued_threads')
+          .select('config_id, thread_id, grant_id, inbox_id')
+          .eq('status', 'queued')
+          .is('pgmq_queued_at', null)
+          .limit(BATCH_SIZE);
+        
+        if (error) {
+          console.error('[Backfill] Error querying orphaned threads:', error);
+          return;
+        }
+        
+        if (!orphanedThreads || orphanedThreads.length === 0) {
+          if (batchNumber === 1) {
+            console.log('[Backfill] No orphaned threads found');
+          } else {
+            console.log(`[Backfill] Orphaned thread recovery complete. Total processed: ${totalProcessed} threads across ${batchNumber - 1} batches`);
+          }
+          return;
+        }
+        
+        console.log(`[Backfill] Batch ${batchNumber}: Found ${orphanedThreads.length} orphaned threads`);
+        
+        // Group by config_id
+        const byConfig = orphanedThreads.reduce((acc, thread) => {
+          if (!acc[thread.config_id]) acc[thread.config_id] = [];
+          acc[thread.config_id].push(thread);
+          return acc;
+        }, {} as Record<string, typeof orphanedThreads>);
+        
+        // Queue each config's threads (in parallel batches for speed)
+        let batchSuccessCount = 0;
+        const PARALLEL_BATCH_SIZE = 20; // Process 20 threads at a time
+        
+        for (const [configId, threads] of Object.entries(byConfig)) {
+          console.log(`[Backfill] Batch ${batchNumber}: Queueing ${threads.length} orphaned threads for config ${configId}`);
+          
+          let successCount = 0;
+          
+          // Process threads in parallel chunks
+          for (let i = 0; i < threads.length; i += PARALLEL_BATCH_SIZE) {
+            const chunk = threads.slice(i, i + PARALLEL_BATCH_SIZE);
+            
+            // Queue chunk in parallel
+            const results = await Promise.allSettled(
+              chunk.map(thread => 
+                this.queueThreadToPGMQ(
+                  thread.thread_id,
+                  thread.grant_id,
+                  thread.inbox_id,
+                  thread.config_id
+                )
+              )
+            );
+            
+            // Count successes
+            const chunkSuccesses = results.filter(r => r.status === 'fulfilled').length;
+            successCount += chunkSuccesses;
+            batchSuccessCount += chunkSuccesses;
+            
+            // Log progress every chunk
+            if ((i + PARALLEL_BATCH_SIZE) % 100 === 0 || i + PARALLEL_BATCH_SIZE >= threads.length) {
+              console.log(`[Backfill] Batch ${batchNumber}: Progress ${Math.min(i + PARALLEL_BATCH_SIZE, threads.length)}/${threads.length} threads for config ${configId}`);
+            }
+          }
+          
+          console.log(`[Backfill] Batch ${batchNumber}: Queued ${successCount}/${threads.length} threads for config ${configId}`);
+        }
+        
+        totalProcessed += batchSuccessCount;
+        console.log(`[Backfill] Batch ${batchNumber} complete. ${batchSuccessCount} threads queued. Running total: ${totalProcessed}`);
+        
+        // If we processed fewer than the batch size, we're done
+        if (orphanedThreads.length < BATCH_SIZE) {
+          console.log(`[Backfill] Orphaned thread recovery complete. Total processed: ${totalProcessed} threads across ${batchNumber} batches`);
+          return;
+        }
+        
+        // Small delay between batches to avoid overwhelming the system
+        await this.delay(1000);
+      }
+    } catch (error) {
+      console.error('[Backfill] Error during orphaned thread recovery:', error);
+      // Don't throw - recovery failure shouldn't prevent startup
+    }
+  }
+  
+  private async checkForExistingQueuedThreads(configId: string): Promise<void> {
+    try {
+      const { data: existingThreads, error } = await this.supabase
         .from('queued_threads')
         .select('thread_id, grant_id, inbox_id, config_id')
         .eq('config_id', configId)
-        .eq('status', 'queued');
+        .eq('status', 'queued')
+        .is('pgmq_queued_at', null);
       
       if (error) {
-        console.error('[Backfill] Error fetching queued threads:', error);
-        throw error;
-      }
-      
-      if (!queuedThreads || queuedThreads.length === 0) {
-        console.log('[Backfill] No threads to queue to PGMQ');
+        console.error('[Backfill] Error checking for existing queued threads:', error);
         return;
       }
       
-      console.log(`[Backfill] Queueing ${queuedThreads.length} threads to PGMQ...`);
-      
-      // Queue each thread to PGMQ
-      let successCount = 0;
-      for (const thread of queuedThreads) {
-        try {
-          await this.queueThread(
-            thread.thread_id,
-            thread.grant_id,
-            thread.inbox_id,
-            thread.config_id
-          );
-          successCount++;
-        } catch (error) {
-          console.error(`[Backfill] Error queueing thread ${thread.thread_id} to PGMQ:`, error);
-          // Continue with other threads
+      if (existingThreads && existingThreads.length > 0) {
+        console.log(`[Backfill] Found ${existingThreads.length} existing queued threads for config ${configId}`);
+        console.log('[Backfill] Queueing them to PGMQ before starting new backfill...');
+        
+        let successCount = 0;
+        for (const thread of existingThreads) {
+          try {
+            await this.queueThreadToPGMQ(
+              thread.thread_id,
+              thread.grant_id,
+              thread.inbox_id,
+              thread.config_id
+            );
+            successCount++;
+          } catch (error) {
+            console.error(`[Backfill] Error queueing existing thread ${thread.thread_id}:`, error);
+            // Continue with other threads
+          }
         }
+        
+        console.log(`[Backfill] Queued ${successCount}/${existingThreads.length} existing threads to PGMQ`);
       }
-      
-      console.log(`[Backfill] Successfully queued ${successCount}/${queuedThreads.length} threads to PGMQ`);
-      
     } catch (error) {
-      console.error('[Backfill] Error bulk queueing threads:', error);
+      console.error('[Backfill] Error checking existing queued threads:', error);
+      // Don't throw - this shouldn't prevent backfill from proceeding
+    }
+  }
+  
+  private async queueThreadToPGMQ(
+    threadId: string,
+    grantId: string,
+    inboxId: string,
+    configId: string
+  ): Promise<void> {
+    try {
+      // Queue to PGMQ using existing queueThread method
+      await this.queueThread(threadId, grantId, inboxId, configId);
+      
+      // Update pgmq_queued_at timestamp
+      const { error } = await this.supabase
+        .from('queued_threads')
+        .update({ pgmq_queued_at: new Date().toISOString() })
+        .eq('config_id', configId)
+        .eq('nylas_thread_id', threadId);
+      
+      if (error) {
+        console.error(`[Backfill] Error updating pgmq_queued_at for thread ${threadId}:`, error);
+        // Don't throw - the thread is in PGMQ which is what matters
+      }
+    } catch (error) {
+      console.error(`[Backfill] Error queueing thread ${threadId} to PGMQ:`, error);
       throw error;
     }
   }

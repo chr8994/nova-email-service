@@ -5,8 +5,16 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:webhooks": "tsx watch src/webhooks.ts",
+    "dev:backfill": "tsx watch src/backfill.ts",
+    "dev:threads": "tsx watch src/threads.ts",
+    "dev:completion": "tsx watch src/completion.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:webhooks": "node dist/webhooks.js",
+    "start:backfill": "node dist/backfill.js",
+    "start:threads": "node dist/threads.js",
+    "start:completion": "node dist/completion.js",
     "type-check": "tsc --noEmit"
   },
   "keywords": [

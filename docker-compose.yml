@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # Webhook Processor - Real-time webhook notifications
+  webhooks:
+    build: .
+    container_name: nova-webhooks
+    command: node dist/webhooks.js
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - nova-email
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Backfill Processor - Historical thread discovery orchestration
+  backfill:
+    build: .
+    container_name: nova-backfill
+    command: node dist/backfill.js
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - nova-email
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Thread Sync Processor - Individual thread message sync
+  # Can be scaled with: docker-compose up -d --scale threads=3
+  threads:
+    build: .
+    command: node dist/threads.js
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - nova-email
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 2  # Run 2 thread processors by default
+
+  # Completion Monitor - Tracks progress and marks backfills complete
+  completion:
+    build: .
+    container_name: nova-completion
+    command: node dist/completion.js
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - nova-email
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  nova-email:
+    driver: bridge

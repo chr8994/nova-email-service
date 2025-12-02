@@ -5,7 +5,8 @@ services:
   webhooks:
     build: .
     container_name: nova-webhooks
-    command: node dist/webhooks.js
+    environment:
+      - WORKER_TYPE=webhooks
     env_file: .env
     restart: unless-stopped
     networks:
@@ -20,7 +21,8 @@ services:
   backfill:
     build: .
     container_name: nova-backfill
-    command: node dist/backfill.js
+    environment:
+      - WORKER_TYPE=backfill
     env_file: .env
     restart: unless-stopped
     networks:
@@ -35,7 +37,8 @@ services:
   # Can be scaled with: docker-compose up -d --scale threads=3
   threads:
     build: .
-    command: node dist/threads.js
+    environment:
+      - WORKER_TYPE=threads
     env_file: .env
     restart: unless-stopped
     networks:
@@ -52,7 +55,8 @@ services:
   completion:
     build: .
     container_name: nova-completion
-    command: node dist/completion.js
+    environment:
+      - WORKER_TYPE=completion
     env_file: .env
     restart: unless-stopped
     networks:
@@ -62,6 +66,40 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Extraction Queue Processor - Queues messages for AI extraction
+  extraction-queue:
+    build: .
+    container_name: nova-extraction-queue
+    environment:
+      - WORKER_TYPE=extraction-queue
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - nova-email
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Extraction Worker - Processes messages with LLM for structured data extraction
+  # Can be scaled with: docker-compose up -d --scale extraction=3
+  extraction:
+    build: .
+    environment:
+      - WORKER_TYPE=extraction
+    env_file: .env
+    restart: unless-stopped
+    networks:
+      - nova-email
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 2  # Run 2 extraction workers by default for parallel LLM processing
 
 networks:
   nova-email:

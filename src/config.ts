@@ -24,6 +24,30 @@ export const config = {
     // Delay between API calls to prevent rate limiting (ms)
     apiDelayMs: parseInt(process.env.API_DELAY_MS || '200', 10),
   },
+  extractionQueue: {
+    enabled: process.env.EXTRACTION_QUEUE_ENABLED !== 'false',
+    pollIntervalMs: parseInt(process.env.EXTRACTION_QUEUE_POLL_INTERVAL_MS || '15000', 10),
+    batchSize: parseInt(process.env.EXTRACTION_QUEUE_BATCH_SIZE || '10', 10),
+  },
+  extraction: {
+    enabled: process.env.EXTRACTION_ENABLED !== 'false',
+    pollIntervalMs: parseInt(process.env.EXTRACTION_POLL_INTERVAL_MS || '5000', 10),
+    maxRetries: parseInt(process.env.EXTRACTION_MAX_RETRIES || '3', 10),
+    timeoutMs: parseInt(process.env.EXTRACTION_TIMEOUT_MS || '30000', 10),
+    llmProvider: process.env.EXTRACTION_LLM_PROVIDER || 'openai',
+    llmModel: process.env.EXTRACTION_LLM_MODEL || 'gpt-4.1',
+    temperature: parseFloat(process.env.EXTRACTION_LLM_TEMPERATURE || '0.1'),
+  },
+  spamDetection: {
+    enabled: process.env.SPAM_DETECTION_ENABLED !== 'false',
+    model: process.env.SPAM_DETECTION_MODEL || 'gpt-4o-mini',
+    batchSize: parseInt(process.env.SPAM_DETECTION_BATCH_SIZE || '10', 10),
+  },
+  pgmq: {
+    enabled: process.env.EXTRACTION_PGMQ_ENABLED !== 'false',
+    visibilityTimeout: parseInt(process.env.EXTRACTION_PGMQ_VISIBILITY_TIMEOUT || '300', 10),
+    batchSize: parseInt(process.env.EXTRACTION_PGMQ_BATCH_SIZE || '5', 10),
+  },
   logging: {
     level: process.env.LOG_LEVEL || 'info',
   },
